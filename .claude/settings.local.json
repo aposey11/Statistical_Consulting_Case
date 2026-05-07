@@ -3,7 +3,8 @@
     "allow": [
       "Bash(uv pip *)",
       "Bash(/Users/alexander/Coding/Statistical_Consulting_Case/.venv/bin/python -c \"import pkgutil; mods=['pandas','polars','numpy','sklearn','lightgbm','matplotlib','seaborn','scipy','pyarrow']; print\\('\\\\n'.join\\(f'{m}: {pkgutil.find_loader\\(m\\) is not None}' for m in mods\\)\\)\")",
-      "Bash(/Users/alexander/Coding/Statistical_Consulting_Case/.venv/bin/python)"
+      "Bash(/Users/alexander/Coding/Statistical_Consulting_Case/.venv/bin/python)",
+      "Bash(/Users/alexander/Coding/Statistical_Consulting_Case/.venv/bin/python -c ' *)"
     ]
   }
 }

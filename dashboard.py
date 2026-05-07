@@ -21,6 +21,7 @@ data so reviewers can click around without a fitted model.
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
 import numpy as np
@@ -105,8 +106,8 @@ def _synthetic_recommendations() -> pd.DataFrame:
     rng = np.random.default_rng(42)
     n = 2000
     campsites = [f"CAMP_{i:03d}" for i in range(40)]
-    markets = ["BE_FR", "NL", "DE", "FR_FR", "UK"]
-    types = ["Comfort", "Premium", "Budget", "Family"]
+    markets = ["Domestic", "DACH", "Benelux", "Rest of Europe"]
+    types   = ["Comfort", "Family", "Luxury", "Romantic", "Standard"]
     df = pd.DataFrame({
         "CampsiteCode":      rng.choice(campsites, n),
         "MarketGroupCode":   rng.choice(markets, n),
@@ -136,32 +137,33 @@ def _synthetic_recommendations() -> pd.DataFrame:
          (df["price_change_pct"] > 15) | (cv > 0.15)],
         ["red", "yellow"], default="green",
     )
+    # Synthetic uplift CI (±20% noise band) so the dashboard's CI columns work in demo mode
+    df["uplift_eur_lo"] = df["uplift_eur"] * 0.80
+    df["uplift_eur_hi"] = df["uplift_eur"] * 1.20
     return df
 
 
 @st.cache_data
-def load_posterior(path: str | None) -> dict:
-    """Load posterior summary; falls back to synthetic posterior."""
+def load_posterior_meta(path: str | None) -> dict:
+    """Load posterior + methodology metadata; fall back to synthetic posterior."""
     if path and Path(path).exists():
-        try:
-            import arviz as az
-            idata = az.from_netcdf(path)
-            beta_post = idata.posterior["log_price_z"].values.flatten()
-            return {
-                "beta_samples": beta_post,
-                "beta_mean":    float(beta_post.mean()),
-                "beta_lo":      float(np.percentile(beta_post, 10)),
-                "beta_hi":      float(np.percentile(beta_post, 90)),
-            }
-        except Exception:
-            pass
+        with open(path) as f:
+            meta = json.load(f)
+        meta["beta_samples"] = np.asarray(meta["beta_samples"])
+        return meta
     rng = np.random.default_rng(42)
     samples = rng.normal(-0.752, 0.090, 2000)
     return {
-        "beta_samples": samples,
-        "beta_mean":    float(samples.mean()),
-        "beta_lo":      float(np.percentile(samples, 10)),
-        "beta_hi":      float(np.percentile(samples, 90)),
+        "beta_samples":  samples,
+        "beta_mean":     float(samples.mean()),
+        "beta_lo":       float(np.percentile(samples, 10)),
+        "beta_hi":       float(np.percentile(samples, 90)),
+        "gate_pass_pct": 1.0,
+        "methodology": {
+            "v1_naive":       {"beta": +0.294, "label": "v1: naïve regression",    "verdict": "Endogenous (wrong sign)"},
+            "v3_conditioned": {"beta": -0.752, "label": "v3: + bookings_on_books", "verdict": "DAG-identified, production"},
+            "v4_overcontrol": {"beta": -10.4,  "label": "v4: + calendar/WBA/temp", "verdict": "Over-controlled (collinear)"},
+        },
     }
 
 
@@ -171,14 +173,14 @@ def load_posterior(path: str | None) -> dict:
 
 def parse_cli():
     p = argparse.ArgumentParser()
-    p.add_argument("--recommendations", default=None)
-    p.add_argument("--idata",           default=None)
+    p.add_argument("--recommendations", default="outputs/recommendations.csv")
+    p.add_argument("--posterior",       default="outputs/posterior_meta.json")
     args, _ = p.parse_known_args()
     return args
 
 cli   = parse_cli()
 df    = load_recommendations(cli.recommendations)
-post  = load_posterior(cli.idata)
+post  = load_posterior_meta(cli.posterior)
 
 
 # ---------------------------------------------------------------------------
@@ -271,9 +273,9 @@ c3.metric(
     f"80% CI [{beta_lo:+.2f}, {beta_hi:+.2f}]",
 )
 c4.metric(
-    "Capacity-bound %",
-    f"{adopted['capacity_binds'].mean() * 100:.0f}%",
-    "of adopted recommendations",
+    "Diagnostic-gate pass",
+    f"{post.get('gate_pass_pct', 1.0) * 100:.1f}%",
+    "of groups have β_g < 0",
 )
 
 st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
@@ -286,19 +288,35 @@ st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
 a, b = st.columns([1, 1.3])
 
 with a:
-    st.markdown("### Where the elasticity number comes from")
+    st.markdown("### The elasticity story (v1 → v3 → v4)")
+    methodology = post.get("methodology", {})
+
     fig = go.Figure()
+    # v3 posterior histogram (the production model)
     fig.add_histogram(
         x=post["beta_samples"], nbinsx=40,
-        marker_color="#2E5C8A", opacity=0.85, name="posterior",
+        marker_color="#2E5C8A", opacity=0.85, name="v3 posterior",
     )
-    fig.add_vline(x=beta_mean, line_dash="dash", line_color="#1A1F2B",
-                  annotation_text=f"β = {beta_mean:.2f}", annotation_position="top right")
-    fig.add_vline(x=0, line_dash="dot", line_color="#C04848",
-                  annotation_text="0 (no effect)", annotation_position="top left")
+    # Methodology milestones as vertical markers
+    milestones = [
+        ("v1_naive",       "#C04848", "naïve"),
+        ("v3_conditioned", "#4C9A4A", "production"),
+        ("v4_overcontrol", "#E0B341", "over-controlled"),
+    ]
+    for key, color, short in milestones:
+        if key not in methodology:
+            continue
+        b = methodology[key]["beta"]
+        fig.add_vline(
+            x=b, line_dash="dash", line_color=color, line_width=2,
+            annotation_text=f"{short}<br>β = {b:+.2f}",
+            annotation_position="top",
+            annotation_font=dict(size=10, color=color),
+        )
+    fig.add_vline(x=0, line_dash="dot", line_color="#888", line_width=1)
     fig.update_layout(
         height=320,
-        margin=dict(t=10, b=10, l=10, r=10),
+        margin=dict(t=40, b=10, l=10, r=10),
         plot_bgcolor="white",
         paper_bgcolor="white",
         xaxis_title="β (log_price coefficient)",
@@ -307,9 +325,13 @@ with a:
     )
     st.plotly_chart(fig, use_container_width=True)
     st.caption(
-        "After conditioning on bookings-on-books to close the demand→price backdoor, "
-        "the global elasticity is firmly negative. |β| < 1 implies inelastic demand: "
-        "revenue grows when prices rise, until capacity binds."
+        "**Naïve regression** gave β = +0.29 (price endogeneity → wrong sign). "
+        "**v3** conditions on `bookings_on_books`, the demand signal the pricer reacts to — "
+        "this closes the backdoor and yields the production elasticity. "
+        "**v4** added more controls (calendar, WBA, temperature) but they are collinear "
+        "with `log_bob`, destabilizing the price coefficient. The minimal sufficient "
+        "adjustment set is the right one. |β| < 1 ⇒ inelastic demand ⇒ revenue rises with price, "
+        "capped only by capacity (which rarely binds in this dataset)."
     )
 
 with b:
@@ -381,31 +403,48 @@ with right:
     st.plotly_chart(fig, use_container_width=True)
 
 
-# Top decisions table
+# Top decisions table — with posterior 80% CI on uplift if available
 st.markdown("### Top 25 decisions ranked by uplift")
+st.caption("Uplift 80% CI propagates posterior uncertainty in β onto each row's revenue projection.")
+
+base_cols = ["CampsiteCode", "MarketGroupCode", "AccoTypeRangeCode",
+             "WeekStartDate", "p_obs_mean", "recommended_price",
+             "price_change_pct", "TBN", "expected_bookings_capped",
+             "uplift_eur"]
+has_ci = {"uplift_eur_lo", "uplift_eur_hi"}.issubset(fdf.columns)
+if has_ci:
+    base_cols += ["uplift_eur_lo", "uplift_eur_hi"]
+base_cols += ["hitl_flag"]
+
+rename_map = {
+    "p_obs_mean": "current price",
+    "recommended_price": "recommended",
+    "price_change_pct": "Δ %",
+    "TBN": "current bookings",
+    "expected_bookings_capped": "expected bookings",
+    "uplift_eur": "uplift €",
+    "uplift_eur_lo": "uplift 10% CI",
+    "uplift_eur_hi": "uplift 90% CI",
+    "hitl_flag": "flag",
+}
 table = (fdf.sort_values("uplift_eur", ascending=False)
             .head(25)
-            .loc[:, ["CampsiteCode", "MarketGroupCode", "AccoTypeRangeCode",
-                     "WeekStartDate", "p_obs_mean", "recommended_price",
-                     "price_change_pct", "TBN", "expected_bookings_capped",
-                     "uplift_eur", "hitl_flag"]]
-            .rename(columns={
-                "p_obs_mean": "current price",
-                "recommended_price": "recommended",
-                "price_change_pct": "Δ %",
-                "TBN": "current bookings",
-                "expected_bookings_capped": "expected bookings",
-                "uplift_eur": "uplift €",
-                "hitl_flag": "flag",
-            }))
+            .loc[:, base_cols]
+            .rename(columns=rename_map))
+
+fmt = {
+    "current price":     "€{:.2f}",
+    "recommended":       "€{:.2f}",
+    "Δ %":               "{:+.1f}%",
+    "expected bookings": "{:.1f}",
+    "uplift €":          "€{:,.0f}",
+}
+if has_ci:
+    fmt["uplift 10% CI"] = "€{:,.0f}"
+    fmt["uplift 90% CI"] = "€{:,.0f}"
+
 st.dataframe(
-    table.style.format({
-        "current price": "€{:.2f}",
-        "recommended": "€{:.2f}",
-        "Δ %": "{:+.1f}%",
-        "expected bookings": "{:.1f}",
-        "uplift €": "€{:,.0f}",
-    }),
+    table.style.format(fmt),  # type: ignore[arg-type]
     use_container_width=True,
     hide_index=True,
     height=420,
@@ -419,21 +458,27 @@ st.dataframe(
 st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
 st.markdown("## Strategic insight")
 
-# Heatmap: market × type uplift
-pivot = (fdf.groupby(["MarketGroupCode", "AccoTypeRangeCode"])["uplift_eur"]
-            .sum().reset_index()
+# Heatmap: market × type — average recommended price change (where to focus pricing actions)
+st.markdown("### Where are we changing prices most?")
+st.caption("Average recommended price change (%) by market × accommodation type. "
+           "Diverging colour: red = increases, blue = decreases.")
+pivot = (fdf.groupby(["MarketGroupCode", "AccoTypeRangeCode"])["price_change_pct"]
+            .mean().reset_index()
             .pivot(index="MarketGroupCode", columns="AccoTypeRangeCode",
-                   values="uplift_eur")
+                   values="price_change_pct")
             .fillna(0))
 
-st.markdown("### Where does the uplift come from?")
+vmax = max(abs(pivot.values.min()), abs(pivot.values.max()), 1.0)
 fig = px.imshow(
     pivot.values,
-    labels=dict(x="Accommodation type", y="Market group", color="Uplift €"),
+    labels=dict(x="Accommodation type", y="Market group", color="Avg Δ price (%)"),
     x=pivot.columns, y=pivot.index,
-    color_continuous_scale="Blues",
+    color_continuous_scale="RdBu_r",
+    color_continuous_midpoint=0,
+    range_color=(-vmax, vmax),
     aspect="auto",
 )
+fig.update_traces(texttemplate="%{z:.1f}%", textfont=dict(size=11))
 fig.update_layout(
     height=320, margin=dict(t=10, b=10, l=10, r=10),
     plot_bgcolor="white", paper_bgcolor="white",
