@@ -1,0 +1,145 @@
+\documentclass[11pt,a4paper]{article}
+
+% --- packages ---
+\usepackage[utf8]{inputenc}        % allow é, ï, etc.
+\usepackage[T1]{fontenc}           % proper text encoding
+\usepackage{tikz}                  % drawing the forest plot
+\usepackage{xcolor}                % named colors
+\usepackage{caption}               % \captionof{figure}{...}
+\usepackage{booktabs}              % \toprule, \midrule, \bottomrule
+\usepackage{graphicx}              % \includegraphics
+\usepackage{eurosym}               % \euro{} for euro signs (we'll use later)
+\usetikzlibrary{arrows.meta, positioning, fit}
+
+% --- custom colors used in the figure ---
+\definecolor{accent}{HTML}{2E5C8A}    % blue
+\definecolor{accent2}{HTML}{4C9A4A}   % green (v3 — causally identified)
+\definecolor{accent3}{HTML}{C04848}   % red (v1 — wrong sign)
+\definecolor{accent4}{HTML}{E0B341}   % amber (v4, v5 — over-controlled)
+
+\title{Dynamic Pricing for European Camping Group}
+\author{Jimmy Zhang, Tobias Vanoverschelde, Fausto De Valck, Andrew Posey, 
+Alexander Lievens \\ KU Leuven, Statistical Consulting 2025--2026}
+\date{May 2026}
+
+\begin{document}
+\maketitle
+
+\section{Problem and business context}
+
+European Camping Group (ECG) operates over 400 campsites across 10 European countries, each offering several accommodation types and serving four distinct market segments. With a 30-week open season, this implies more than 250{,}000 individual prices to set every year. This project asks: can historical booking data be used to recommend better prices, and what would that be worth in revenue?
+
+\section{The trap}
+
+The most direct approach, regressing booked nights on price while controlling for accommodation and seasonality, yields an answer that is economically impossible. On a 50{,}000 row training sample, the estimated price coefficient is positive: $\beta = +0.29$, with 80\% credible interval $[+0.18, +0.42]$. Read literally, this says ``raising prices increases bookings''.
+
+The reason is structural, not statistical. ECG's pricing system already reacts to demand: when a campsite fills up, prices rise, when bookings are slow, prices fall. In the historical record, high prices and high bookings therefore tend to occur together, not because price causes bookings, but because both respond to a common, unobservable underlying demand signal.
+
+The fix requires identifying the demand signal that the pricer reacts to. Bookings on books, the cumulative number of nights already reserved at the moment a price is set, is observed in our data and lies on the only open backdoor path between price and remaining demand. Conditioning on it blocks the reverse-causation channel and isolates the genuine effect of price.
+
+\begin{center}
+\begin{tikzpicture}[
+  obs/.style={circle, draw=accent, thick, fill=accent!10, minimum size=12mm, font=\footnotesize, inner sep=0pt},
+  latent/.style={circle, draw=accent3, thick, dashed, fill=accent3!8, minimum size=12mm, font=\footnotesize, inner sep=0pt},
+  treatment/.style={circle, draw=accent4!85!black, thick, fill=accent4!20, minimum size=12mm, font=\footnotesize, inner sep=0pt},
+  outcome/.style={circle, draw=accent2!85!black, thick, fill=accent2!18, minimum size=12mm, font=\footnotesize, inner sep=0pt},
+  arrow/.style={-{Latex[length=2.5mm]}, thick, draw=black!55},
+  causal/.style={-{Latex[length=2.5mm]}, thick, draw=accent2!85!black, line width=1.4pt},
+]
+\node[latent]    (D)                                       {$D$};
+\node[obs]       (BoB) [below left=14mm and 8mm of D]      {BoB};
+\node[treatment] (P)   [below=22mm of D]                   {$p$};
+\node[outcome]   (Y)   [below right=14mm and 8mm of D]     {HBN};
+
+\draw[arrow]  (D)   -- (BoB);
+\draw[arrow]  (BoB) -- (P);
+\draw[arrow]  (D)   -- (Y);
+\draw[causal] (P)   -- (Y) node[midway, below, font=\scriptsize, color=accent2!85!black] {causal effect};
+
+% Highlight that we condition on BoB
+\node[draw=accent, thick, dashed, rounded corners=2mm, inner sep=3.5mm,
+      fit=(BoB), label={[font=\scriptsize, color=accent]above:condition on}] {};
+\end{tikzpicture}
+\captionof{figure}{Causal structure linking price ($p$) and bookings (HBN). Latent demand $D$ (red, dashed, unobservable) drives bookings-on-books (BoB, observed) and bookings directly. The existing pricer sets $p$ in response to BoB. The path $p \leftarrow \mathrm{BoB} \leftarrow D \to \mathrm{HBN}$ is a backdoor: it lets demand contaminate the apparent price-bookings relationship. Conditioning on BoB (dashed blue box) closes it, leaving only the genuine causal effect $p \to \mathrm{HBN}$.}
+\end{center}
+
+\bigskip
+
+\begin{center}
+\begin{tikzpicture}[x=22mm, y=8mm]
+  % axis (zoomed in to v1 / v3 range)
+  \draw[->, thick] (-1.5, 0) -- (0.7, 0) node[right, font=\footnotesize] {$\beta$ (price elasticity)};
+  \foreach \x in {-1.5, -1.0, -0.5, 0, 0.5} {
+      \draw (\x, -0.1) -- (\x, 0.1);
+      \node[below, font=\scriptsize] at (\x, -0.15) {\x};
+  }
+  \draw[dashed, gray] (0, -0.2) -- (0, 2.6);
+  \node[gray, font=\scriptsize, above] at (0, 2.7) {no effect};
+
+  % v1 — naïve, wrong sign
+  \draw[thick, accent3, line width=1pt] (0.18, 2.0) -- (0.42, 2.0);
+  \filldraw[accent3] (0.29, 2.0) circle (1.8pt);
+  \node[right=3mm, font=\footnotesize] at (0.45, 2.0) {\textbf{v1} naïve $\to$ \emph{wrong sign (endogeneity)}};
+
+  % v3 — conditioned on log_bob
+  \draw[thick, accent2, line width=1pt] (-0.86, 1.0) -- (-0.64, 1.0);
+  \filldraw[accent2] (-0.75, 1.0) circle (1.8pt);
+  \node[right=3mm, font=\footnotesize] at (-0.55, 1.0) {\textbf{v3} $+\,\log\mathrm{BoB}$ $\to$ \emph{$\beta = -0.76$}};
+\end{tikzpicture}
+\captionof{figure}{Posterior point estimate and 80\% credible interval for the global price elasticity $\beta$. The naïve specification (v1) recovers an economically impossible positive sign, direct evidence of price endogeneity in ECG's data. After conditioning on bookings-on-books, the elasticity becomes negative as economic theory requires (v3, $\beta = -0.76$).}
+\end{center}
+
+v3 is intentionally minimal. It includes only the variables strictly needed to close the demand-autocorrelation backdoor, which makes it a clean estimator of the local price elasticity but not a forecaster. It deliberately omits lead-time, calendar and accommodation-feature interactions that would help predict bookings accurately at any single point in the booking horizon. For per-snapshot demand prediction we use a complementary, non-causal model, described next.
+
+\section{Two models, two jobs}
+
+Before the models, one observation about the elasticity finding. The Bayesian estimate of $\beta = -0.76$ implies demand is inelastic on average ($|\beta| < 1$). Under a constant-elasticity assumption, this would mean ECG could raise prices uniformly and capture more revenue. The richer LightGBM optimiser in Section 4 refines this picture: average elasticity is right, but per-cell optima vary widely. Some campsite-week cells are over-priced, others under-priced, and the aggregate move is close to zero. The business case for a pricing engine on this dataset is therefore not ``raise everything'' but ``identify the asymmetries'', figuring out which cells should move, in which direction, and by how much.
+
+The elasticity itself comes from the Bayesian model in Section 2. To turn it into per-cell recommendations we also need a forecaster, as the bayesian model is too computationally intensive, and in our findings doesn't bode well with time varyine price forecasting: a model that predicts bookings at any candidate price for any specific snapshot of the booking horizon. The Bayesian model is causally clean but deliberately small, and it omits the lead-time, calendar and accommodation interactions that would let it predict per-snapshot demand accurately.
+
+For prediction we train a gradient-boosted-trees model (LightGBM) on the same conditioning structure plus the features the Bayesian model omits. Trees can include all of these without the over-conditioning collapse that breaks richer Bayesian specifications. The two models also cross-check each other: the LightGBM partial-dependence slope on log-price at the median price is close to the Bayesian $\beta$, a useful robustness check that two procedures with different inductive biases agree on the local elasticity.
+
+Out-of-sample, LightGBM achieves a median ROMGID-level error of 27\% on total booked nights, within industry norms. The error is concentrated in low-volume ROMGIDs where small absolute differences inflate percentage errors. For ROMGIDs with at least 10 bookings per season, median error drops to 22\%.
+
+\section{The optimiser and what it recommends}
+
+For each test-fold snapshot independently, we ask the LightGBM forecaster a counterfactual question: at this point in the booking horizon, what price would have produced the highest predicted revenue? We sweep 21 candidate price multipliers in the range $[0.85,\, 1.15] \times p_{\text{obs}}$, predict bookings at each candidate, compute the implied revenue $p \cdot \hat{N}(p)$, and pick the maximum. The output for a single ROMGID is therefore not a single static price but a trajectory of 53 prices across the booking horizon, one per snapshot.
+
+Three constraints keep the recommendation defensible. The candidate range is bounded at $\pm 15\%$ of the historical price for that group, beyond which the model would be extrapolating onto data it has not seen. A capacity cap is applied if predicted bookings exceed a campsite's capacity, which never happens in practice on this dataset because median utilisation is 10\%. Every recommendation passes through a two-tier flag, described in Section 5, before deployment.
+
+Applied to 14{,}200 ROMGIDs in the held-out test fold:
+
+\begin{center}
+\small
+\begin{tabular}{@{}lr@{}}
+\toprule
+\textbf{Metric} & \textbf{Value} \\
+\midrule
+Median per-ROMGID $\Delta$price & $-0.7\%$ \\
+$\Delta$price IQR (per ROMGID) & $[-6.0\%,\, +5.4\%]$ \\
+\% snapshots at upper bound (1.15$\times$) & 12.7\% \\
+\% snapshots at lower bound (0.85$\times$) & 14.7\% \\
+\% snapshots with interior optimum & \textbf{72.6\%} \\
+Total predicted uplift & \euro{}63M \\
+Uplift as \% of baseline & $+38.8\%$ \\
+Flag split (green / yellow) & 51\% / 49\% \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{center}
+\includegraphics[width=0.92\linewidth]{figures/recommendations_distribution.pdf}
+\captionof{figure}{Distribution of recommended price changes across all test-fold snapshots. The histogram is roughly symmetric around zero, with mass at both the lower and upper safety bounds. About 73\% of decisions land at an interior optimum within the safe range, 14.7\% want a 15\% discount, and 12.7\% want a 15\% increase.}
+\end{center}
+
+The most important number on the page is the \textbf{72.6\% interior-optimum rate}. For nearly three quarters of snapshot decisions, the model finds a revenue-maximising price strictly inside the $\pm 15\%$ safe range, not at a boundary. This is something the constant-elasticity Bayesian model in Section 2 could not produce. When elasticity is forced constant the revenue function has no interior maximum, but when LightGBM learns a flexible price-demand curve, genuine interior optima emerge. The recommendations are also bidirectional, 14.7\% of snapshots want a price decrease and 12.7\% want the maximum 15\% increase. ECG is over-pricing some cells and under-pricing others, with the bulk of decisions sitting at modest interior adjustments.
+
+\begin{center}
+\includegraphics[width=0.92\linewidth]{figures/revenue_trajectory.pdf}
+\captionof{figure}{Predicted revenue per snapshot for one representative ROMGID, observed price (blue) versus recommended price (amber), with 80\% prediction intervals from a quantile LightGBM. Most of the booking horizon shows similar predicted revenue under both strategies, with the recommended trajectory slightly higher in the mid-horizon weeks where bookings actually concentrate.}
+\end{center}
+
+\paragraph{A fat caveat on the headline uplift.} The total predicted uplift of \euro{}63M (+38.8\%) is a model-based projection and is almost certainly optimistic. Three reasons. First, LightGBM has 27\% out-of-sample error on observed-price predictions, and the counterfactual prices we feed it during optimisation are deliberately different from what the model has seen. Predictions in those regions carry larger errors. Second, the optimiser systematically picks the candidate that maximises the predicted revenue, which is also the candidate where any residual model error in the model's favour gets fully exploited. Third, the Tweedie loss the model is trained under can produce small positive predicted bookings even in regions of the booking horizon where actual bookings are essentially zero, which means the optimiser sees apparent revenue gains in cells where no real demand exists. The directional finding (interior optima, mostly modest adjustments, bidirectional recommendations) is robust to all three concerns. The magnitude is not. We treat the +38.8\% as a directional indicator that the system has headroom, not as a calibrated lift estimate. A randomised price experiment, discussed in the next section, is the only way to convert this into a number ECG can deploy against.
+
+
+\end{document}

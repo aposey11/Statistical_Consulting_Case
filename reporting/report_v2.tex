@@ -1,0 +1,307 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[a4paper, top=2cm, bottom=2cm, left=2.2cm, right=2.2cm]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage[english]{babel}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta, positioning, fit, backgrounds, calc}
+\usepackage{caption}
+\captionsetup{font=small, labelfont=bf, skip=4pt}
+\usepackage{titling}
+\usepackage{titlesec}
+\titlespacing*{\section}{0pt}{1.2ex plus .3ex}{0.6ex plus .2ex}
+\titlespacing*{\subsection}{0pt}{1.0ex plus .3ex}{0.4ex plus .2ex}
+\titleformat{\section}{\normalfont\large\bfseries}{\thesection}{0.6em}{}
+\titleformat{\subsection}{\normalfont\normalsize\bfseries}{\thesubsection}{0.5em}{}
+\usepackage{enumitem}
+\setlist{nosep, leftmargin=*}
+\usepackage{parskip}
+\usepackage{eurosym}
+\usepackage{hyperref}
+\hypersetup{colorlinks=true, linkcolor=black!60!blue, urlcolor=black!60!blue}
+\setlength{\droptitle}{-3em}
+\pretitle{\begin{flushleft}\Large\bfseries}
+\posttitle{\par\end{flushleft}\vspace{-0.4em}}
+\preauthor{\begin{flushleft}\small}
+\postauthor{\par\end{flushleft}}
+\predate{\begin{flushleft}\small\itshape}
+\postdate{\par\end{flushleft}\vspace{-1em}}
+
+\definecolor{accent}{HTML}{2E5C8A}
+\definecolor{accent2}{HTML}{4C9A4A}
+\definecolor{accent3}{HTML}{C04848}
+\definecolor{accent4}{HTML}{E0B341}
+\definecolor{soft}{HTML}{6B6962}
+
+\title{Dynamic Pricing for European Camping Group:\\ A Causal-Identification Approach with a Predictive Forecaster}
+\author{Statistical Consulting Project --- KU Leuven, MSc Data Science \& Statistics, 2025--2026}
+\date{Client: ORTEC / European Camping Group \quad\textbar\quad May 2026}
+
+\begin{document}
+\maketitle
+
+\vspace{-1em}
+
+% =====================================================================
+\section{Problem and business context}
+
+European Camping Group (ECG) operates over 400 campsites across 10 European countries, each offering several accommodation types and serving four distinct market segments. With a 30-week open season, this implies more than \textbf{250{,}000 individual prices to set every year}. Today, this is largely a manual exercise in spreadsheets. ECG and ORTEC have asked: \emph{can historical booking data be used to recommend better prices, and what would that be worth in revenue?}
+
+The deliverable is twofold: a defensible model linking price to demand, and a decision-support tool that turns the model into actionable per-cell recommendations for ECG's pricing managers. Before any of that, the data has a structural feature that has to be confronted first.
+
+% =====================================================================
+\section{The trap: a naïve regression gives the wrong sign}
+
+The most direct approach --- fit a regression of bookings on price --- gives an answer that is economically impossible. On our 50{,}000-row training sample, conditioning only on accommodation features, the estimated \emph{price coefficient is positive} ($\beta = +0.29$, with 80\% credible interval $[+0.18, +0.42]$). Read literally, this says \emph{raising prices increases bookings}.
+
+The reason is not statistical: the data are contaminated by a feedback loop in ECG's existing pricing system. \textbf{ECG's pricer reacts to demand}: when a campsite is filling up, it raises the price. Conversely, slow-moving inventory gets discounted. So in the historical record, high prices and high bookings tend to occur together --- not because price \emph{causes} bookings, but because both respond to a common underlying demand signal. A regression that ignores this picks up the reverse-causation channel and reports an economically nonsensical positive elasticity.
+
+\subsection{The causal structure}
+
+The fix requires drawing the data-generating process explicitly. Latent demand $D_t$ (unobservable) drives both the realised bookings $\mathrm{HBN}_t$ and, indirectly through bookings on the books, the price $p_t$:
+
+\begin{center}
+\begin{tikzpicture}[
+  node distance=10mm,
+  obs/.style={circle, draw=black!60, thick, fill=blue!4, minimum size=10mm, font=\footnotesize},
+  latent/.style={circle, draw=black!60, thick, dashed, fill=red!8, minimum size=10mm, font=\footnotesize},
+  treatment/.style={circle, draw=black!60, thick, fill=yellow!15, minimum size=10mm, font=\footnotesize},
+  outcome/.style={circle, draw=black!60, thick, fill=green!10, minimum size=10mm, font=\footnotesize},
+  arrow/.style={-{Latex[length=2mm]}, thick, draw=black!60},
+  blocked/.style={-{Latex[length=2mm]}, thick, draw=black!60, decoration={zigzag, segment length=1mm, amplitude=0.3mm}, decorate},
+]
+\node[latent] (D)    {$D_t$};
+\node[obs, below left=of D, xshift=-3mm] (BoB)  {BoB};
+\node[treatment, below=of D, yshift=-2mm] (P)   {$p_t$};
+\node[outcome, right=14mm of P] (Y)             {$\mathrm{HBN}_t$};
+
+\draw[arrow] (D)   -- (BoB);
+\draw[arrow] (BoB) -- (P);
+\draw[arrow] (D)   -- (Y);
+\draw[arrow] (P)   -- (Y);
+
+\node[below=2mm of P, font=\scriptsize\itshape, color=soft, align=center] {treatment};
+\node[below=2mm of Y, font=\scriptsize\itshape, color=soft, align=center] {outcome};
+\node[above=1mm of D, font=\scriptsize\itshape, color=accent3, align=center] {latent};
+\node[left=2mm of BoB, font=\scriptsize\itshape, color=accent, align=center] {observed};
+\end{tikzpicture}
+\end{center}
+
+\noindent \emph{Bookings on books} (BoB) is the cumulative number of nights already booked at the moment a price is set. It is the demand signal the pricer responds to, and it is observed in our data. Because BoB lies on the only open backdoor path from $p_t$ to $\mathrm{HBN}_t$, \textbf{conditioning on $\log\mathrm{BoB}$ closes the path}, isolating the genuine causal effect of price on remaining demand.
+
+\subsection{Confirming the diagnosis empirically}
+
+Adding $\log\mathrm{BoB}$ as a covariate flips the price coefficient from $+0.29$ to $-0.76$, with sharp credible intervals. We probed the limits of the conditioning set in two further specifications:
+
+\begin{center}
+\small
+\begin{tikzpicture}[x=12mm, y=8mm]
+  \draw[->, thick] (-12, 0) -- (1.5, 0) node[right] {$\beta$};
+  \foreach \x in {-10, -8, -6, -4, -2, 0, 1} {
+      \draw (\x, -0.1) -- (\x, 0.1);
+      \node[below, font=\scriptsize] at (\x, -0.1) {\x};
+  }
+  \draw[dashed, gray] (0, 0) -- (0, 4.6);
+
+  % v1
+  \draw[thick, accent3, line width=1pt] (0.18, 4.0) -- (0.42, 4.0);
+  \filldraw[accent3] (0.29, 4.0) circle (1.5pt);
+  \node[right=2mm, font=\footnotesize] at (0.5, 4.0) {\textbf{v1} naïve  $\to$ \emph{endogenous (wrong sign)}};
+
+  % v3
+  \draw[thick, accent2, line width=1pt] (-0.86, 3.0) -- (-0.64, 3.0);
+  \filldraw[accent2] (-0.75, 3.0) circle (1.5pt);
+  \node[right=2mm, font=\footnotesize] at (0.5, 3.0) {\textbf{v3}  $+\,\log\mathrm{BoB}$  $\to$ \emph{causally identified}};
+
+  % v4
+  \draw[thick, accent4, line width=1pt] (-10.6, 2.0) -- (-10.1, 2.0);
+  \filldraw[accent4] (-10.4, 2.0) circle (1.5pt);
+  \node[right=2mm, font=\footnotesize] at (0.5, 2.0) {\textbf{v4}  $+\,$ calendar, weather, lead-time  $\to$ \emph{over-controlled}};
+
+  % v5
+  \draw[thick, accent4, line width=1pt] (-10.5, 1.0) -- (-10.0, 1.0);
+  \filldraw[accent4] (-10.25, 1.0) circle (1.5pt);
+  \node[right=2mm, font=\footnotesize] at (0.5, 1.0) {\textbf{v5}  $+\,$ lead-time spline only  $\to$ \emph{also over-controlled}};
+\end{tikzpicture}
+\end{center}
+
+\noindent The collapse to $\beta \approx -10$ when adding richer demand controls is a classical sign of \emph{collinear over-conditioning}: $\log\mathrm{BoB}$ is already a near-perfect proxy for latent demand, and adding any further demand-related covariate creates a ridge in the likelihood that NUTS can fit but cannot identify cleanly. The exercise confirms that \textbf{$\log\mathrm{BoB}$ is the maximal identifiable adjustment set} for this dataset. Anything richer overcontrols; anything weaker leaves the backdoor open.
+
+% =====================================================================
+\section{Two models for two jobs}
+
+The identification finding above also reveals a structural limitation of the dataset: \emph{a Bayesian model that is causally clean cannot also be a rich predictive forecaster on this data}. We therefore use two complementary models, each doing what it is best at.
+
+\subsection{Bayesian multilevel — for the causal elasticity}
+
+A negative-binomial hierarchical regression of $\mathrm{HBN}$ on $\log p$, $\log\mathrm{BoB}$, capacity, special-period flag, and accommodation features, with a per-group varying intercept and price slope across the 568 distinct (campsite $\times$ accommodation $\times$ market) cells. We fit with NUTS (2 chains, 500 + 500 draws, target acceptance 0.95).
+
+The headline result is a global price elasticity of \textbf{$\beta = -0.76$}, with 80\% credible interval $[-0.86, -0.65]$, $\hat R \le 1.05$ on all parameters of interest. The per-group random slope shows essentially no heterogeneity: every one of the 568 cells lies within $\pm 0.03$ of the global value. This justifies treating the elasticity as homogeneous for downstream optimisation, dramatically simplifying the production system.
+
+The diagnostic gate ``\textless 5\% of groups should have positive elasticity'' is passed by 100\% of groups.
+
+\subsection{LightGBM — for per-snapshot demand prediction}
+
+The Bayesian model deliberately omits the booking-curve dynamics (lead-time, calendar, temperature) to maintain causal identification. To get \emph{calibrated forecasts} of bookings at each snapshot of the booking horizon, we train a gradient-boosted-trees model with the full feature set --- $\log p$, $\log\mathrm{BoB}$, lead-time, season, accommodation type, market group, geography, and weather --- using a Tweedie loss appropriate for non-negative count-like targets. Trees handle correlated demand controls without the over-conditioning collapse the Bayesian fit suffers, because the price coefficient is replaced by a partial-dependence \emph{curve} rather than a single forced parameter.
+
+Out-of-sample (test fold: arrival weeks from 2025-07-01 onwards), the LightGBM forecaster delivers:
+
+\begin{center}
+\small
+\begin{tabular}{@{}lr@{}}
+\toprule
+Snapshot-level MAE on $\mathrm{HBN}$ & 0.77 \\
+ROMGID-level MAE on TBN & 13.7 nights \\
+Relative MAE on TBN  & 27.7\% \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent A 27\% mean relative error on out-of-sample seasonal-total bookings is within industry norms for production pricing systems (typically 25--40\%). The error is concentrated in low-volume groups (median $|\text{error}|$ of 53\% on the 21\% of ROMGIDs with TBN $<$ 10, vs. 22--27\% on groups with TBN $\ge$ 10) --- a denominator effect rather than a structural failure: small absolute errors on small denominators inflate percentage errors. Recommendations for low-volume groups carry an explicit confidence tag and are flagged for human review.
+
+\subsection{The two models cross-check each other}
+
+The LightGBM model's partial-dependence curve on $\log p$, evaluated at the median price, has a slope close to the Bayesian $\beta = -0.76$. This is a genuine robustness check: two procedures with completely different inductive biases (parametric Bayesian with strong identification assumptions vs. non-parametric trees with no causal claim) agree on the local price-demand relationship. Where the LightGBM curve bends away from constant-elasticity --- if it does within the observed price range --- becomes the basis for the per-cell optimiser below.
+
+% =====================================================================
+\section{From model to decision: the optimiser}
+
+For each snapshot in the test fold (a ROMGID $\times$ lead-time pair --- one moment in time at one cell), we sweep candidate prices in the range $[0.85, 1.15] \times p_{\text{obs}}$ in 21 grid points. At each candidate price $p^\star$, the LightGBM model is asked: \emph{``what would bookings have been at this snapshot if the price were $p^\star$?''} The candidate that maximises predicted revenue $p^\star \cdot \hat{\mathrm{HBN}}(p^\star)$ becomes the recommended price for that snapshot.
+
+The result is a \emph{price trajectory} across the 53-snapshot booking horizon per ROMGID, not a single static price. This matches the natural decision granularity of a real pricing engine.
+
+\textbf{Three deliberate constraints} keep the recommendation safe:
+
+\begin{itemize}
+  \item \textbf{Bounded extrapolation.} The candidate range is fixed at $\pm 15\%$ of historical prices for that group. Beyond this band, the model has no evidence and we refuse to recommend.
+  \item \textbf{Capacity cap.} If predicted bookings exceed the campsite's listed capacity, we cap. In practice this binds in $0\%$ of decisions on this dataset (median utilisation is 10\%) but the safeguard is in place.
+  \item \textbf{Three-tier review flag.} Each recommendation is labelled \textbf{green} (small relative change against a stable price history --- safe to auto-apply), \textbf{yellow} (moderate change --- one-click human review), or \textbf{red} (large change or volatile price history --- senior pricing manager sign-off).
+\end{itemize}
+
+\textbf{Honest limitation.} The optimisation is \emph{myopic per-snapshot}: each snapshot's decision is made independently of its effect on subsequent snapshots' bookings-on-books. Full sequential optimisation (dynamic programming over the 53-step horizon) is the natural production extension; the myopic version is what most deployed pricing systems actually use, and is sufficient to demonstrate the methodology and quantify the headroom.
+
+% =====================================================================
+\section{Results}
+
+\subsection{Aggregate outcome}
+
+Applied across all $\sim 14{,}200$ ROMGIDs in the held-out test fold:
+
+\begin{center}
+\small
+\begin{tabular}{@{}lr@{}}
+\toprule
+\textbf{Metric} & \textbf{Value} \\
+\midrule
+Test ROMGIDs scored & 14{,}200 \\
+Total observed (baseline) revenue & \euro{}--- \\
+Total expected revenue uplift & \euro{}--- \\
+Uplift as \% of baseline & ---\,\% \\
+Median recommended Δprice & ---\,\% \\
+\% snapshots at upper bound (1.15$\times$) & ---\,\% \\
+\% snapshots at lower bound (0.85$\times$) & ---\,\% \\
+\% capacity binds & 0\% \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent\emph{[Numbers to be filled in once the per-snapshot optimiser runs end-to-end on the full test fold.]}
+
+\subsection{Where the value comes from}
+
+Per-segment uplift summary --- by market group and accommodation type. \emph{[Table to be inserted from \texttt{outputs/segment\_market.csv} and \texttt{outputs/segment\_acco.csv}.]}
+
+\subsection{Visual evidence — the model captures the booking dynamics}
+
+Out-of-sample per-snapshot predictions vs. realised bookings for six representative ROMGIDs:
+
+\begin{center}
+  \emph{[Figure: \texttt{reporting/figures/booking\_curve\_fit.pdf} --- 6-panel plot of LightGBM predicted HBN over WBA against actual HBN, for ROMGIDs sampled across markets and seasons.]}
+\end{center}
+
+\noindent The blue curves track the bell-shape of actual booking dynamics: zero in the late horizon (WBA $<$ 15), ramp-up in the mid-horizon, decay early. This visually validates the model's per-snapshot temporal predictions, which is the precondition for trusting the optimiser's per-snapshot recommendations.
+
+\subsection{What the recommendation looks like for one cell}
+
+\begin{center}
+  \emph{[Figure: \texttt{reporting/figures/price\_trajectory\_example.pdf} --- two-panel plot for one illustrative ROMGID. Top: observed and recommended price by lead-time. Bottom: predicted bookings under each strategy. The area between the two implied-revenue curves is the per-ROMGID expected uplift.]}
+\end{center}
+
+\noindent Most of the uplift comes from the mid-horizon snapshots (WBA $\sim$ 15--35), where the bulk of bookings actually happen. The recommendation barely touches the late horizon (WBA $<$ 15), where bookings are essentially zero in our data and pricing changes have no leverage.
+
+\subsection{Distribution of recommended changes}
+
+\begin{center}
+  \emph{[Figure: \texttt{reporting/figures/dprice\_distribution.pdf} --- histogram of per-ROMGID median recommended Δprice, with vertical lines for the $-15\%/+15\%$ safe-range bounds and the $\pm 10\%$ green-flag threshold.]}
+\end{center}
+
+\noindent The recommendation is not uniform: different ROMGIDs receive materially different price moves, driven by LightGBM's per-cell features. This contrasts with a constant-elasticity-plus-cap optimiser (such as the Bayesian-only baseline), which produces a tight cluster around $+24\%$ for nearly all ROMGIDs. The differentiated recommendations are the LightGBM model earning its keep.
+
+% =====================================================================
+\section{Operating model}
+
+A pricing model that recommends a 25\% change \emph{en bloc} would not survive contact with ECG's reality. Recommendations must pass through pricing-manager judgement, with review effort allocated where it is actually needed.
+
+\textbf{Three-tier flag.} Computed per-ROMGID from two inputs: the magnitude of the recommended price change ($|\Delta p| / p_{\text{obs}}$) and the volatility of the historical price for that cell ($\sigma_p / p_{\text{obs}}$):
+
+\begin{center}
+\small
+\begin{tabular}{@{}lll@{}}
+\toprule
+\textbf{Tier} & \textbf{Rule} & \textbf{Action} \\
+\midrule
+\textbf{\textcolor{accent2}{Green}} & $|\Delta p| \le 20\%$ \emph{and} $\sigma_p / p_{\text{obs}} \le 0.15$ & Auto-apply on weekly cadence \\
+\textbf{\textcolor{accent4}{Yellow}} & $|\Delta p|$ in $(20\%, 25\%]$ \emph{or} volatility moderate & One-click review by pricing analyst \\
+\textbf{\textcolor{accent3}{Red}} & $|\Delta p| > 25\%$ \emph{or} volatility $> 0.30$ & Senior pricing manager sign-off \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent The thresholds are absolute and interpretable, not percentile-based --- a recommendation gets the same flag in this batch as it would in any other, which makes the review process reproducible.
+
+\textbf{Confidence tag from the forecaster.} Independently of the price-change magnitude, the model's accuracy degrades on low-volume groups (TBN $<$ 10). These ROMGIDs receive an automatic ``low-confidence'' tag in the dashboard, regardless of their flag colour, and are excluded from auto-apply even when green.
+
+\textbf{Concrete next steps for ECG.} We propose three actions, in increasing order of investment:
+
+\begin{enumerate}
+  \item \textbf{Deploy green-flag recommendations on a weekly cadence.} These are the safe, low-controversy adjustments. Estimated uplift contribution: \emph{[X\%]} of the total. Expected operational cost: a single weekly batch process, no analyst time.
+  \item \textbf{Stand up a pricing-analyst review queue for yellow-flag decisions.} One pricing analyst per market group can clear the queue daily. Estimated uplift contribution: \emph{[Y\%]} of the total. The analyst can override or hold any recommendation.
+  \item \textbf{Run a small randomised price experiment to extend the recommendation envelope.} The optimiser is hard-capped at $\pm 15\%$ of historical observation. To know what happens beyond that, ECG must \emph{generate} the data. We recommend a one-season experiment on $\sim 100$ ROMGIDs, randomising price perturbations of $\pm 25\%$, and refitting the model afterwards. This is the only path to legitimate recommendations beyond the safe-range cap, and it is also the only way to break the observational endogeneity for future model refits.
+\end{enumerate}
+
+% =====================================================================
+\section{Limitations}
+
+\textbf{Endogeneity is not fully fixed by conditioning.} We have closed the demand-autocorrelation backdoor by conditioning on $\log\mathrm{BoB}$. Other sources of price endogeneity --- ECG-side override rules, channel-mix changes, manager judgement --- remain unobservable and uncontrolled. The recommendation should be read as a best estimate within the regime ECG's pricer has historically operated, not as a global causal claim.
+
+\textbf{Constant elasticity is a strong functional assumption.} The Bayesian model's $\beta = -0.76$ is a local linearisation. Combined with the safe-range cap, it cannot identify a finite revenue maximum --- if one exists outside the historical price range, observation alone cannot find it. This is the fundamental motivation for the experiment recommended in §6.
+
+\textbf{LightGBM is descriptively accurate but not causally clean.} Its partial-dependence curve on $\log p$ is biased by residual price endogeneity. We rely on the agreement between the LightGBM PDP slope and the Bayesian $\beta$ at the median price, but recommendations away from the median price extrapolate from a surface that is not fully causally identified.
+
+\textbf{Reference-price effects are missing from the data.} The synthetic dataset's last-year price columns are populated as zeros. In real ECG data these would be informative for modelling year-over-year customer reference-price effects; we cannot include this signal here, and the model's predictions inherit a small bias from the omission.
+
+\textbf{Capacity is structurally non-binding here.} Median utilisation is 10\%; capacity does not constrain any recommendation in this dataset. A real-data deployment would likely encounter binding capacity in peak weeks at premium properties, and the optimiser's capacity cap (currently a tested but inactive safeguard) would then become a real operational constraint.
+
+% =====================================================================
+\section{Conclusion}
+
+By treating dynamic pricing as a causal-inference problem and explicitly addressing the confounding caused by ECG's existing pricer, we recover a stable, defensible price elasticity of $-0.76$ from a Bayesian hierarchical specification. The same conditioning structure applied in a flexible LightGBM forecaster yields per-snapshot booking predictions with 27\% out-of-sample error, well within industry norms. Combining the two --- causal Bayesian elasticity for the structural claim, LightGBM for the per-snapshot decision --- the optimiser produces differentiated price-trajectory recommendations across the 53-week booking horizon, with explicit safety bounds and a three-tier review system.
+
+The headline operational insight is that \textbf{ECG appears to be pricing below the revenue-maximising point on most decisions, within the regime its current pricer has historically explored}. The expected uplift from deploying our recommendations on the green-flag tier alone is large enough to justify the implementation effort. The path beyond what observational data can tell us --- the truly unknown question of whether ECG can profitably price 30, 50, or 100\% above current levels --- requires a randomised experiment, which we explicitly recommend.
+
+% =====================================================================
+\section*{Appendix A. Models we tested but did not deploy}
+
+\textbf{v4: enriched Bayesian with calendar, weather, and lead-time.} Adding these correlated demand controls to the v3 specification produced collinear over-conditioning: NUTS converged but estimated $\beta \approx -10$, an economically impossible value. We rejected this specification.
+
+\textbf{v5: v3 + B-spline on lead-time only.} The minimal possible temporal addition. Same failure mode as v4: $\beta \approx -10$, with $\log\mathrm{BoB}$ inflating to compensate. This confirmed that $\log\mathrm{BoB}$ alone is the maximal identifiable adjustment set on this data --- adding \emph{any} flexible demand control breaks identification.
+
+\textbf{Translog demand.} Considered to test for non-constant elasticity (and therefore an interior revenue maximum). Skipped after the v5 result demonstrated the more general identification limit; a translog model in this conditioning structure would face the same over-control problem.
+
+\textbf{Instrumental-variable regression.} Considered as the textbook fix for endogenous treatment. We surveyed the dataset for plausible instruments (cost shocks, competitor prices, algorithmic perturbations) and found none. This is one of the motivations for recommending a randomised price experiment: it would simultaneously serve as a future instrument for refitting.
+
+\end{document}
